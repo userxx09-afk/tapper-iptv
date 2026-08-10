@@ -3,9 +3,11 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
 android {
     namespace = "io.tapper.firetv"
     compileSdk = 34
+
     defaultConfig {
         applicationId = "io.tapper.firetv"
         // API 25 = Fire OS 6, which covers the Fire TV Stick 4K. Raising this to
@@ -13,15 +15,17 @@ android {
         // files rather than the variable Archivo TTF: FontVariation needs 26.
         minSdk = 25
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.2"
     }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -31,6 +35,7 @@ android {
     sourceSets["main"].java.srcDirs("src/main/kotlin")
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
 }
+
 dependencies {
     implementation(project(":shared"))
     implementation(libs.core.ktx)
@@ -49,4 +54,7 @@ dependencies {
     implementation(libs.media3.ui)
     implementation(libs.coil.compose)
     implementation(libs.coroutines.android)
+    // Keystore-backed storage for Xtream credentials. They are embedded in every
+    // stream URL, so a plaintext copy on disk is a resellable subscription.
+    implementation(libs.security.crypto)
 }
