@@ -1,17 +1,14 @@
 package io.tapper.firetv.ui
 
 import android.view.ViewGroup
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -31,7 +28,6 @@ import kotlinx.coroutines.cancel
 fun PlayerScreen(channel: Channel, onExit: () -> Unit) {
     val context = LocalContext.current
     val scope = remember { CoroutineScope(SupervisorJob() + Dispatchers.Main) }
-    val focus = remember { FocusRequester() }
 
     var status by remember { mutableStateOf<String?>("Tuning ${channel.name}…") }
 
@@ -47,21 +43,16 @@ fun PlayerScreen(channel: Channel, onExit: () -> Unit) {
     DisposableEffect(channel.id) {
         onDispose { player.release(); scope.cancel() }
     }
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+
+    // Back must leave playback, not the app. onKeyEvent never sees Back on a
+    // touchscreen (it arrives as a system back gesture), so BackHandler is the
+    // right API — it covers the tablet gesture and the Fire TV remote alike.
+    BackHandler { onExit() }
 
     Box(
         Modifier
             .fillMaxSize()
             .background(Backdrop)
-            .focusRequester(focus)
-            .focusable()
-            .onKeyEvent { e ->
-                // Back exits playback. Without handling it here the Activity is
-                // finished instead and the user drops out of the whole app.
-                if (e.type == KeyEventType.KeyUp &&
-                    (e.key == Key.Back || e.key == Key.Escape)
-                ) { onExit(); true } else false
-            }
     ) {
         AndroidView(
             factory = { ctx ->
