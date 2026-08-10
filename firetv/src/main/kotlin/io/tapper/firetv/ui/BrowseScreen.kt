@@ -2,7 +2,7 @@ package io.tapper.firetv.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
@@ -17,7 +17,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -120,8 +119,14 @@ private fun FocusRow(
                 color = if (focused) Focus else Color.Transparent,
                 shape = RoundedCornerShape(8.dp),
             )
-            .focusable(interactionSource = interaction)
-            .onKeyEvent { e -> if (e.isSelect()) { onClick(); true } else false }
+            // clickable() is focusable AND handles DPAD_CENTER/Enter itself, so this
+            // works on a remote and on a touchscreen. The previous focusable() +
+            // onKeyEvent pair only ever fired for a D-pad — taps did nothing.
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = { onFocused(); onClick() },
+            )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -153,8 +158,11 @@ private fun ChannelRow(channel: Channel, onClick: () -> Unit) {
                 color = if (focused) Focus else Color.Transparent,
                 shape = RoundedCornerShape(8.dp),
             )
-            .focusable(interactionSource = interaction)
-            .onKeyEvent { e -> if (e.isSelect()) { onClick(); true } else false }
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -185,8 +193,3 @@ private fun ChannelRow(channel: Channel, onClick: () -> Unit) {
         }
     }
 }
-
-/** Fire TV remotes send DPAD_CENTER; some send ENTER. Both mean "select". */
-internal fun KeyEvent.isSelect(): Boolean =
-    type == KeyEventType.KeyUp &&
-        (key == Key.DirectionCenter || key == Key.Enter || key == Key.NumPadEnter)
