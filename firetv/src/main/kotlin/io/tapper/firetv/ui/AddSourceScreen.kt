@@ -17,7 +17,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import io.tapper.firetv.ui.theme.Backdrop
 import io.tapper.firetv.ui.theme.Dim
@@ -56,8 +55,8 @@ fun AddSourceScreen(
         Spacer(Modifier.height(20.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Chip("Xtream login", xtream) { xtream = true }
-            Chip("M3U playlist URL", !xtream) { xtream = false }
+            ModeChip("Xtream login", xtream) { xtream = true }
+            ModeChip("M3U playlist URL", !xtream) { xtream = false }
         }
 
         Spacer(Modifier.height(24.dp))
@@ -68,10 +67,10 @@ fun AddSourceScreen(
             Field("Username", user, "") { user = it }
             Field("Password", pass, "", password = true) { pass = it }
         } else {
-            Field("Playlist URL", url, "https://.../playlist.m3u") { url = it }
+            Field("Playlist URL", url, "https://…/playlist.m3u") { url = it }
             // The default playlist declares two guides and the first one 404s,
             // so an override is a normal requirement, not an edge case.
-            Field("EPG URL (optional)", epg, "https://.../guide.xml.gz") { epg = it }
+            Field("EPG URL (optional)", epg, "https://…/guide.xml.gz") { epg = it }
         }
 
         error?.let {
@@ -81,11 +80,11 @@ fun AddSourceScreen(
 
         Spacer(Modifier.height(28.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            ActionButton(if (busy) "Checking..." else "Save and connect", enabled = !busy) {
+            Button(if (busy) "Checking…" else "Save and connect", enabled = !busy) {
                 if (xtream) onSubmitXtream(name.ifBlank { host }, host, user, pass)
                 else onSubmitM3u(name.ifBlank { "Playlist" }, url, epg.ifBlank { null })
             }
-            ActionButton("Cancel", enabled = !busy, onClick = onCancel)
+            Button("Cancel", enabled = !busy, onClick = onCancel)
         }
 
         Spacer(Modifier.height(20.dp))
@@ -123,15 +122,15 @@ private fun Field(
             singleLine = true,
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink),
             cursorBrush = SolidColor(Focus),
-            visualTransformation = if (password) PasswordVisualTransformation()
-                else VisualTransformation.None,
+            visualTransformation = if (password) PasswordVisualTransformation() else
+                androidx.compose.ui.text.input.VisualTransformation.None,
             modifier = Modifier.fillMaxWidth(),
         )
     }
 }
 
 @Composable
-private fun Chip(label: String, active: Boolean, onClick: () -> Unit) {
+private fun ModeChip(label: String, active: Boolean, onClick: () -> Unit) {
     Box(
         Modifier.clip(RoundedCornerShape(20.dp))
             .background(if (active) Focus.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
@@ -144,7 +143,7 @@ private fun Chip(label: String, active: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ActionButton(label: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun Button(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Box(
         Modifier.clip(RoundedCornerShape(10.dp))
             .background(if (enabled) Focus.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.05f))

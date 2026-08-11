@@ -5,7 +5,7 @@ import android.content.Context
 /**
  * Favourites and pinned countries.
  *
- * Favourites are keyed "sourceId|channelId" and deliberately span sources - a
+ * Favourites are keyed "sourceId|channelId" and deliberately span sources — a
  * favourites list organised by provider would be useless, since the whole point
  * is one place for the handful of channels actually watched.
  */

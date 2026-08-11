@@ -10,7 +10,7 @@ import org.json.JSONObject
 /**
  * A configured content source.
  *
- * Credentials live in [CredentialVault], never here - this record is written to
+ * Credentials live in [CredentialVault], never here — this record is written to
  * ordinary preferences and would otherwise put a paid subscription in plaintext.
  */
 data class TvSource(
@@ -63,7 +63,7 @@ class SourceStore(context: Context) {
         for (i in 0 until arr.length()) {
             arr.optJSONObject(i)?.let { runCatching { TvSource.fromJson(it) }.getOrNull()?.let(list::add) }
         }
-        // The built-in source is never removable - deleting it would leave a new
+        // The built-in source is never removable — deleting it would leave a new
         // user in an empty app with no obvious way back.
         if (list.none { it.builtIn }) list.add(0, TvSource.BUILTIN)
         return list
