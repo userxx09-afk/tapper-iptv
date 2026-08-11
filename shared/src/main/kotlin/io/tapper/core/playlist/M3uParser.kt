@@ -1,6 +1,7 @@
 package io.tapper.core.playlist
 
 import io.tapper.core.model.Channel
+import io.tapper.core.model.ContentKind
 import io.tapper.core.model.Country
 import io.tapper.core.model.M3uResult
 import io.tapper.core.model.StreamRef
@@ -25,6 +26,47 @@ object M3uParser {
     val UNPLAYABLE_SCHEMES = listOf("mms://", "mmsh://", "rtmp://", "rtsp://")
 
     fun isPlayable(url: String) = UNPLAYABLE_SCHEMES.none { url.startsWith(it) }
+
+    /** Containers that only ever carry a finished file, never a live feed. */
+    private val VOD_EXTENSIONS = setOf("mp4", "mkv", "avi", "mov", "m4v", "wmv", "mpg", "mpeg")
+
+    /**
+     * Manifest and live-transport containers. These settle the question on
+     * their own: a channel served from a path containing "/vod/" or "/movies/"
+     * but ending in .m3u8 is still a live stream, and .flv in particular is a
+     * live transport (HTTP-FLV), not a downloadable file.
+     */
+    private val LIVE_CONTAINERS = setOf("m3u8", "ts", "mpd", "flv", "m3u")
+
+    /**
+     * Classify by URL shape only.
+     *
+     * Category names are useless for this: iptv-org's playlist puts 624 entries
+     * under "Movies" and 398 under "Series", and every one is a live channel
+     * that broadcasts films. Trusting the name would misfile a thousand live
+     * channels as video on demand.
+     *
+     * Xtream's own M3U export, by contrast, encodes the type in the path -
+     * /live/, /movie/, /series/ - which is authoritative.
+     */
+    fun classify(url: String): ContentKind {
+        val path = url.substringBefore('?').lowercase()
+        val ext = path.substringAfterLast('.', "").takeIf { it.length in 2..4 }.orEmpty()
+
+        // A live container settles it regardless of the path.
+        if (ext in LIVE_CONTAINERS) return ContentKind.LIVE
+
+        return when {
+            Regex("""/series/""").containsMatchIn(path) -> ContentKind.SERIES
+            Regex("""/(movie|movies|vod)/""").containsMatchIn(path) -> ContentKind.MOVIE
+            ext in VOD_EXTENSIONS -> ContentKind.MOVIE
+            else -> ContentKind.LIVE
+        }
+    }
+
+    /** group-title is frequently semicolon-delimited: "Documentary;Series". */
+    fun splitCategories(raw: String?): List<String> =
+        raw?.split(';')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
 
     fun parse(content: String, sourceId: String): M3uResult {
         var declaredEpgUrls: List<String> = emptyList()
@@ -86,6 +128,8 @@ object M3uParser {
                         countryCode = Country.fromTvgId(tvgId),
                         epgChannelId = tvgId,
                         streams = listOf(StreamRef(line, 0, e.headers)),
+                        kind = classify(line),
+                        categories = splitCategories(e.group),
                     )
                 }
             }

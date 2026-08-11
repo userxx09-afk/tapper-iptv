@@ -1,6 +1,8 @@
 package io.tapper.core.xtream
 
+import io.tapper.core.model.CategoryName
 import io.tapper.core.model.Channel
+import io.tapper.core.model.ContentKind
 import io.tapper.core.model.StreamRef
 import org.json.JSONArray
 import org.json.JSONObject
@@ -9,7 +11,7 @@ import java.net.URL
 import java.net.URLEncoder
 
 /**
- * Xtream Codes panel client. Uses HttpURLConnection and org.json - both are in
+ * Xtream Codes panel client. Uses HttpURLConnection and org.json — both are in
  * the platform, so this adds no dependencies.
  *
  * Panels are inconsistent in ways that matter: numeric fields arrive as JSON
@@ -40,6 +42,12 @@ class XtreamClient(
     fun liveUrl(streamId: String, ext: String = "ts") =
         "$base/live/${enc(username)}/${enc(password)}/$streamId.$ext"
 
+    fun vodUrl(streamId: String, ext: String) =
+        "$base/movie/${enc(username)}/${enc(password)}/$streamId.$ext"
+
+    fun episodeUrl(episodeId: String, ext: String) =
+        "$base/series/${enc(username)}/${enc(password)}/$episodeId.$ext"
+
     private fun fetch(url: String): String {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
@@ -61,7 +69,7 @@ class XtreamClient(
 
     /**
      * Validates the account and returns what the panel says about it. Surfacing
-     * this is worth the extra call - "your subscription expired" is the single
+     * this is worth the extra call — "your subscription expired" is the single
      * most common cause of an app that looks broken.
      */
     fun authenticate(): XtreamAccount {
@@ -96,6 +104,7 @@ class XtreamClient(
             val o = arr.optJSONObject(i) ?: continue
             val id = o.lenientString("stream_id") ?: continue
             val name = o.lenientString("name")?.trim() ?: continue
+            val parsed = CategoryName.parse(o.lenientString("category_id")?.let { cats[it] })
             out.add(
                 Channel(
                     id = id,
@@ -103,19 +112,131 @@ class XtreamClient(
                     name = name,
                     number = o.lenientInt("num") ?: (i + 1),
                     logoUrl = o.lenientString("stream_icon")?.takeIf { it.isNotBlank() },
-                    group = o.lenientString("category_id")?.let { cats[it] },
-                    // Xtream has no country field; grouping falls back to category.
-                    countryCode = null,
+                    // Xtream has no country field of its own. Providers encode it
+                    // in the category name ("US | Sports"), which is the only place
+                    // the information exists - splitting it gives both axes.
+                    group = parsed.category,
+                    countryCode = parsed.countryCode,
                     epgChannelId = o.lenientString("epg_channel_id")?.takeIf { it.isNotBlank() },
                     streams = listOf(StreamRef(liveUrl(id, ext), 0)),
+                    kind = ContentKind.LIVE,
+                    categories = listOfNotNull(parsed.category),
                 )
             )
         }
         return out
     }
 
-    private fun categoryNames(): Map<String, String> {
-        val arr = JSONArray(fetch(api("get_live_categories")))
+    /**
+     * Films. Same panel, different endpoint - no extra dependency, and the
+     * container extension the panel reports must be used verbatim: guessing
+     * .mp4 for an .mkv gives a 404 on most panels.
+     */
+    fun movies(sourceId: String): List<Channel> {
+        val cats = runCatching { categoryNames("get_vod_categories") }.getOrDefault(emptyMap())
+        val arr = JSONArray(fetch(api("get_vod_streams")))
+        val out = ArrayList<Channel>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.lenientString("stream_id") ?: continue
+            val name = o.lenientString("name")?.trim() ?: continue
+            val parsed = CategoryName.parse(o.lenientString("category_id")?.let { cats[it] })
+            val ext = o.lenientString("container_extension") ?: "mp4"
+            out.add(
+                Channel(
+                    id = "vod-" + id,
+                    sourceId = sourceId,
+                    name = name,
+                    number = null,
+                    logoUrl = o.lenientString("stream_icon")?.takeIf { it.isNotBlank() },
+                    group = parsed.category,
+                    countryCode = parsed.countryCode,
+                    epgChannelId = null,
+                    streams = listOf(StreamRef(vodUrl(id, ext), 0)),
+                    kind = ContentKind.MOVIE,
+                    categories = listOfNotNull(parsed.category),
+                )
+            )
+        }
+        return out
+    }
+
+    /**
+     * Series listings. These carry no stream of their own - episodes are
+     * fetched per series, because a panel with thousands of series would
+     * otherwise need thousands of calls up front.
+     */
+    fun series(sourceId: String): List<Channel> {
+        val cats = runCatching { categoryNames("get_series_categories") }.getOrDefault(emptyMap())
+        val arr = JSONArray(fetch(api("get_series")))
+        val out = ArrayList<Channel>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.lenientString("series_id") ?: continue
+            val name = o.lenientString("name")?.trim() ?: continue
+            val parsed = CategoryName.parse(o.lenientString("category_id")?.let { cats[it] })
+            out.add(
+                Channel(
+                    id = "series-" + id,
+                    sourceId = sourceId,
+                    name = name,
+                    number = null,
+                    logoUrl = o.lenientString("cover")?.takeIf { it.isNotBlank() },
+                    group = parsed.category,
+                    countryCode = parsed.countryCode,
+                    epgChannelId = null,
+                    streams = emptyList(),
+                    kind = ContentKind.SERIES,
+                    categories = listOfNotNull(parsed.category),
+                    seriesId = id,
+                )
+            )
+        }
+        return out
+    }
+
+    /** Episodes for one series, flattened across seasons and sorted. */
+    fun episodes(sourceId: String, seriesId: String): List<Channel> {
+        val root = JSONObject(fetch(api("get_series_info") + "&series_id=" + enc(seriesId)))
+        val seasons = root.optJSONObject("episodes") ?: return emptyList()
+        val out = ArrayList<Triple<Int, Int, Channel>>()
+        val keys = seasons.keys()
+        while (keys.hasNext()) {
+            val seasonKey = keys.next()
+            val arr = seasons.optJSONArray(seasonKey) ?: continue
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val epId = o.lenientString("id") ?: continue
+                val season = seasonKey.toIntOrNull() ?: o.lenientInt("season") ?: 0
+                val number = o.lenientInt("episode_num") ?: (i + 1)
+                val ext = o.lenientString("container_extension") ?: "mp4"
+                val title = o.lenientString("title")?.trim().orEmpty()
+                    .ifEmpty { "Episode " + number }
+                out.add(
+                    Triple(
+                        season, number,
+                        Channel(
+                            id = "ep-" + epId,
+                            sourceId = sourceId,
+                            name = "S" + season + "E" + number + "  " + title,
+                            number = number,
+                            logoUrl = o.optJSONObject("info")?.lenientString("movie_image"),
+                            group = "Season " + season,
+                            countryCode = null,
+                            epgChannelId = null,
+                            streams = listOf(StreamRef(episodeUrl(epId, ext), 0)),
+                            kind = ContentKind.MOVIE,
+                            categories = listOf("Season " + season),
+                        )
+                    )
+                )
+            }
+        }
+        return out.sortedWith(compareBy({ it.first }, { it.second })).map { it.third }
+    }
+
+    private fun categoryNames(action: String = "get_live_categories"): Map<String, String> {
+        val arr = JSONArray(fetch(api(action)))
         val map = HashMap<String, String>(arr.length())
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
@@ -142,9 +263,9 @@ data class XtreamAccount(
     fun summary(nowUtc: Long): String = buildString {
         append(status)
         daysRemaining(nowUtc)?.let {
-            append(if (it < 0) " - expired" else " - $it days left")
+            append(if (it < 0) " — expired" else " — $it days left")
         }
-        append(" | $maxConnections stream")
+        append(" · $maxConnections stream")
         if (maxConnections != 1) append("s")
     }
 }
