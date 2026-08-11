@@ -59,6 +59,7 @@ fun BrowseScreen(
     onSwitchSource: (TvSource) -> Unit,
     onAddSource: () -> Unit,
     onSearch: () -> Unit,
+    onSettings: () -> Unit,
     onRefreshEpg: () -> Unit,
     onOpenSeries: (Channel) -> Unit,
 ) {
@@ -127,7 +128,8 @@ fun BrowseScreen(
                         actions = sources.filter { it.id != activeSource.id }
                             .map { s -> MenuAction("Switch to ${s.name}") { onSwitchSource(s) } }
                             + MenuAction("Add IPTV service...") { onAddSource() }
-                            + MenuAction("Refresh guide") { onRefreshEpg() },
+                            + MenuAction("Refresh guide") { onRefreshEpg() }
+                            + MenuAction("Settings") { onSettings() },
                         onDismiss = { menu = null },
                     )
                 }
@@ -148,6 +150,7 @@ fun BrowseScreen(
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chip("Search", false, onSearch)
+                Chip("Settings", false, onSettings)
                 Chip("Country", axis == Axis.COUNTRY) { axis = Axis.COUNTRY; categoryFilter = null }
                 Chip("Category", axis == Axis.CATEGORY) { axis = Axis.CATEGORY; categoryFilter = null }
             }

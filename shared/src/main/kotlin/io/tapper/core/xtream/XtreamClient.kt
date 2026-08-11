@@ -25,9 +25,21 @@ class XtreamClient(
 ) {
     class XtreamException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
-    private val base = host.trim().trimEnd('/').let {
-        if (it.startsWith("http://") || it.startsWith("https://")) it else "http://$it"
-    }
+    /**
+     * Normalises what people actually paste. Providers hand out addresses in
+     * every shape: with a trailing slash, with /c or /player_api.php already
+     * appended, occasionally with the whole get.php playlist query. Stripping
+     * that back to scheme+host+port avoids a 404 that looks like a bad password.
+     */
+    private val base = host.trim().trimEnd('/')
+        .let { if (it.startsWith("http://") || it.startsWith("https://")) it else "http://$it" }
+        .let { raw ->
+            runCatching {
+                val u = URL(raw)
+                val portPart = if (u.port > 0) ":" + u.port else ""
+                u.protocol + "://" + u.host + portPart
+            }.getOrDefault(raw)
+        }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
@@ -48,22 +60,75 @@ class XtreamClient(
     fun episodeUrl(episodeId: String, ext: String) =
         "$base/series/${enc(username)}/${enc(password)}/$episodeId.$ext"
 
-    private fun fetch(url: String): String {
+    /**
+     * HttpURLConnection refuses cross-protocol redirects: an http:// panel that
+     * 301s to https:// returns the redirect itself rather than following it.
+     * Several panels do exactly that, so redirects are followed by hand.
+     */
+    private fun fetch(url: String, hop: Int = 0): String {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 30_000
-            setRequestProperty("User-Agent", "TapperIPTV/0.2")
+            instanceFollowRedirects = false
+            setRequestProperty("User-Agent", "TapperIPTV/0.5")
         }
         try {
-            val code = conn.responseCode
-            if (code !in 200..299) throw XtreamException("Server returned HTTP $code")
+            val code = try {
+                conn.responseCode
+            } catch (t: Throwable) {
+                throw XtreamException(describe(t, url), t)
+            }
+
+            if (code in 300..399) {
+                val location = conn.getHeaderField("Location")
+                    ?: throw XtreamException("Server sent a redirect with no address (HTTP $code).")
+                if (hop >= 4) throw XtreamException("Too many redirects from this server.")
+                return fetch(URL(URL(url), location).toString(), hop + 1)
+            }
+
+            if (code !in 200..299) {
+                throw XtreamException(
+                    when (code) {
+                        401, 403 -> "Server refused the request (HTTP $code). Check the username and password."
+                        404 -> "Server has no Xtream API at this address (HTTP 404). Check the port and path."
+                        else -> "Server returned HTTP $code."
+                    }
+                )
+            }
             return conn.inputStream.bufferedReader().use { it.readText() }
         } catch (e: XtreamException) {
             throw e
         } catch (t: Throwable) {
-            throw XtreamException("Couldn't reach $base", t)
+            throw XtreamException(describe(t, url), t)
         } finally {
             conn.disconnect()
+        }
+    }
+
+    /**
+     * Turns the underlying failure into something actionable. The previous
+     * version reported "Couldn't reach <host>" for every possible cause, which
+     * made a DNS typo, a wrong port, a TLS problem and a dead server all look
+     * identical.
+     */
+    private fun describe(t: Throwable, url: String): String {
+        val host = runCatching { URL(url).host }.getOrNull() ?: "the server"
+        val port = runCatching { URL(url).port }.getOrNull() ?: -1
+        val where = if (port > 0) "$host:$port" else host
+        return when (t) {
+            is java.net.UnknownHostException ->
+                "Can't find $host. Check the address for typos, or that this device has a working connection."
+            is java.net.SocketTimeoutException ->
+                "$where didn't respond in time. The port may be wrong, or the server may be blocking this network."
+            is java.net.ConnectException ->
+                "$where refused the connection. This usually means the wrong port."
+            is javax.net.ssl.SSLHandshakeException ->
+                "$where has an HTTPS certificate this device rejects. Try http:// instead of https://."
+            is javax.net.ssl.SSLException ->
+                "Secure connection to $where failed. Try http:// instead of https://."
+            else ->
+                "Couldn't reach $where (" + (t::class.simpleName ?: "error") +
+                    (t.message?.let { ": " + it.take(90) } ?: "") + ")"
         }
     }
 

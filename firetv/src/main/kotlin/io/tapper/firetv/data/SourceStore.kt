@@ -79,6 +79,9 @@ class SourceStore(context: Context) {
 
     fun remove(id: String) = save(all().filterNot { it.id == id && !it.builtIn })
 
+    /** Replaces one source, used when editing its guide URL. */
+    fun update(source: TvSource) = save(all().map { if (it.id == source.id) source else it })
+
     var activeId: String
         get() = prefs.getString("active", TvSource.BUILTIN.id) ?: TvSource.BUILTIN.id
         set(v) = prefs.edit().putString("active", v).apply()

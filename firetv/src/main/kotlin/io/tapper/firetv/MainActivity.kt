@@ -14,6 +14,8 @@ import io.tapper.firetv.data.TvSource
 import io.tapper.firetv.ui.AddSourceScreen
 import io.tapper.firetv.ui.BrowseScreen
 import io.tapper.firetv.ui.EpisodesScreen
+import io.tapper.firetv.ui.FailureScreen
+import io.tapper.firetv.ui.SettingsScreen
 import io.tapper.firetv.ui.LoadingScreen
 import io.tapper.firetv.ui.PlayerScreen
 import io.tapper.firetv.ui.SearchScreen
@@ -31,7 +33,8 @@ class MainActivity : ComponentActivity() {
         data class Browse(val catalogue: PlaylistRepository.Catalogue) : Screen
         data object AddSource : Screen
         data object Search : Screen
-        data class Series(val series: Channel, val back: Screen.Browse) : Screen
+        data object Settings : Screen
+        data class Series(val series: Channel) : Screen
     }
 
     private data class Playing(val channels: List<Channel>, val index: Int)
@@ -41,7 +44,13 @@ class MainActivity : ComponentActivity() {
         val app = application as TapperApp
 
         setContent {
-            var screen by remember { mutableStateOf<Screen>(Screen.Loading) }
+            // A real stack, so Back always goes up one level from any screen
+            // rather than each screen inventing its own idea of "back".
+            var stack by remember { mutableStateOf<List<Screen>>(listOf(Screen.Loading)) }
+            val screen = stack.last()
+            fun push(s: Screen) { stack = stack + s }
+            fun pop() { if (stack.size > 1) stack = stack.dropLast(1) }
+            fun replaceAll(s: Screen) { stack = listOf(s) }
             var playing by remember { mutableStateOf<Playing?>(null) }
             var sources by remember { mutableStateOf(app.sourceStore.all()) }
             var active by remember { mutableStateOf(app.sourceStore.active()) }
@@ -78,12 +87,14 @@ class MainActivity : ComponentActivity() {
             }
 
             fun loadActive(force: Boolean = false) {
-                screen = Screen.Loading
+                replaceAll(Screen.Loading)
                 lifecycleScope.launch {
                     val res = app.repository.load(active, force)
-                    screen = res.fold(
-                        onSuccess = { Screen.Browse(it) },
-                        onFailure = { Screen.Failed(it.message ?: "Couldn't load this source.") },
+                    replaceAll(
+                        res.fold(
+                            onSuccess = { Screen.Browse(it) },
+                            onFailure = { Screen.Failed(it.message ?: "Couldn't load this source.") },
+                        )
                     )
                     res.getOrNull()?.let { cat ->
                         epgStatus = if (app.epg.hasData(active.id)) null else "Guide: none yet"
@@ -97,14 +108,12 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(active.id) { loadActive() }
 
-            val catalogue = when (val sc = screen) {
-                is Screen.Browse -> sc.catalogue
-                is Screen.Series -> sc.back.catalogue
-                else -> null
-            }
+            // The catalogue survives navigation: it lives on the Browse entry
+            // at the bottom of the stack, so Settings and Search do not lose it.
+            val catalogue = stack.filterIsInstance<Screen.Browse>().lastOrNull()?.catalogue
 
-            fun openSeries(series: Channel, from: Screen.Browse) {
-                screen = Screen.Series(series, from)
+            fun openSeries(series: Channel) {
+                push(Screen.Series(series))
                 episodes = emptyList(); episodesError = null; episodesLoading = true
                 lifecycleScope.launch {
                     val id = series.seriesId
@@ -142,7 +151,7 @@ class MainActivity : ComponentActivity() {
                         loading = episodesLoading,
                         error = episodesError,
                         onPlay = { list, i -> playing = Playing(list, i) },
-                        onExit = { screen = current.back },
+                        onExit = { pop() },
                     )
 
                     current is Screen.Search && catalogue != null -> SearchScreen(
@@ -152,13 +161,12 @@ class MainActivity : ComponentActivity() {
                         },
                         channelForEpgId = ::channelForEpgId,
                         onPlay = { ch ->
-                            val back = Screen.Browse(catalogue)
                             // A series has no stream; selecting one from search
                             // must open its episode list, not the player.
-                            if (ch.kind == ContentKind.SERIES) openSeries(ch, back)
-                            else { playing = Playing(listOf(ch), 0); screen = back }
+                            if (ch.kind == ContentKind.SERIES) openSeries(ch)
+                            else { playing = Playing(listOf(ch), 0); pop() }
                         },
-                        onExit = { screen = Screen.Browse(catalogue) },
+                        onExit = { pop() },
                     )
 
                     current is Screen.AddSource -> AddSourceScreen(
@@ -198,7 +206,47 @@ class MainActivity : ComponentActivity() {
 
                     current is Screen.Loading -> LoadingScreen("Loading " + active.name + "...")
 
-                    current is Screen.Failed -> LoadingScreen(current.message)
+                    current is Screen.Failed -> FailureScreen(
+                        sourceName = active.name,
+                        message = current.message,
+                        canFallBack = active.id != TvSource.BUILTIN.id,
+                        onRetry = { loadActive(force = true) },
+                        onSettings = { push(Screen.Settings) },
+                        onUseBuiltIn = {
+                            app.sourceStore.activeId = TvSource.BUILTIN.id
+                            active = TvSource.BUILTIN
+                        },
+                    )
+
+                    current is Screen.Settings -> SettingsScreen(
+                        sources = sources,
+                        activeId = active.id,
+                        guideSummary = epgStatus
+                            ?: if (app.epg.hasData(active.id)) "Guide loaded." else "No guide data yet.",
+                        onSwitchSource = {
+                            app.sourceStore.activeId = it.id
+                            active = it
+                            pop()
+                        },
+                        onAddSource = { addError = null; push(Screen.AddSource) },
+                        onRemoveSource = { s2 ->
+                            app.vault.delete(s2.id)
+                            app.sourceStore.remove(s2.id)
+                            sources = app.sourceStore.all()
+                            if (active.id == s2.id) {
+                                app.sourceStore.activeId = TvSource.BUILTIN.id
+                                active = app.sourceStore.active()
+                            }
+                        },
+                        onSetEpgUrl = { s2, url ->
+                            app.sourceStore.update(s2.copy(epgUrlOverride = url))
+                            sources = app.sourceStore.all()
+                            if (active.id == s2.id) active = app.sourceStore.active()
+                        },
+                        onRefreshGuide = { refreshEpg(catalogue) },
+                        onClearCache = { app.repository.clearCache() },
+                        onExit = { pop() },
+                    )
 
                     current is Screen.Browse -> BrowseScreen(
                         catalogue = current.catalogue,
@@ -210,10 +258,11 @@ class MainActivity : ComponentActivity() {
                         epgStatus = epgStatus,
                         onPlay = { list, i -> playing = Playing(list, i) },
                         onSwitchSource = { app.sourceStore.activeId = it.id; active = it },
-                        onAddSource = { addError = null; screen = Screen.AddSource },
-                        onSearch = { screen = Screen.Search },
+                        onAddSource = { addError = null; push(Screen.AddSource) },
+                        onSearch = { push(Screen.Search) },
+                        onSettings = { push(Screen.Settings) },
                         onRefreshEpg = { refreshEpg(current.catalogue) },
-                        onOpenSeries = { openSeries(it, current) },
+                        onOpenSeries = { openSeries(it) },
                     )
                 }
             }

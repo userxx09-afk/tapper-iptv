@@ -183,6 +183,11 @@ class PlaylistRepository(
         }
     }
 
+    /** Forces a fresh download on next load; saved sources are untouched. */
+    fun clearCache() {
+        runCatching { cacheDir.listFiles()?.forEach { if (it.name.endsWith(".m3u")) it.delete() } }
+    }
+
     fun countryLabel(code: String?): String =
         if (code == null) "Ungrouped" else Country.label(code)
 
