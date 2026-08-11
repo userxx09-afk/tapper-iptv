@@ -1,22 +1,15 @@
 name: Build Fire TV APK
 
+# Produces an installable APK as a downloadable artifact. Runs on GitHub's
+# runners, which have the Android SDK preinstalled and unrestricted access to
+# Google's Maven repo.
+
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-
-# The repo cleanup commits arrive in rapid succession. Without this each one
-# would start its own 4-minute build; instead, a new push cancels the previous
-# run and only the final state is built.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-# Required for the release step. The default GITHUB_TOKEN is read-only on
-# repositories created after early 2023, and creating a release without this
-# fails with a 403.
-permissions:
-  contents: write
+  workflow_dispatch:      # trigger by hand from the Actions tab
+  release:
+    types: [created]
 
 jobs:
   apk:
@@ -28,40 +21,38 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # setup-gradle provides Gradle itself, so the repo doesn't need the
+      # gradle-wrapper.jar binary committed. Run `gradle wrapper` locally once
+      # if you'd rather have ./gradlew.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
+          gradle-version: '8.9'
 
       - name: Build debug APK
         run: gradle :firetv:assembleDebug --no-daemon --stacktrace
 
-      - name: Stage APK
+      - name: Rename APK
         run: |
           mkdir -p dist
           cp firetv/build/outputs/apk/debug/*.apk dist/tapper-iptv-${{ github.run_number }}.apk
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: tapper-iptv-apk
           path: dist/*.apk
           retention-days: 30
 
-      # Artifacts require a logged-in GitHub session to download, which the
-      # Downloader app on Fire TV cannot provide. A release asset on a public
-      # repo is fetchable by plain URL, so every build publishes one.
-      - name: Publish release
+      # Tagging a commit publishes the APK at a stable URL you can paste into
+      # the Downloader app on the Fire TV.
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Tapper IPTV build ${{ github.run_number }}
-          body: |
-            Debug-signed APK for sideloading to Fire TV or an Android tablet.
-            Built from ${{ github.sha }}.
           files: dist/*.apk
