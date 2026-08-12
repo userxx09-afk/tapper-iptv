@@ -1,0 +1,63 @@
+name: Build Fire TV APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Rapid consecutive pushes cancel the older run instead of queueing builds.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Required for the release step. The default GITHUB_TOKEN is read-only on
+# repositories created after early 2023; without this, publishing 403s.
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build debug APK
+        run: gradle :firetv:assembleDebug --no-daemon --stacktrace
+
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          cp firetv/build/outputs/apk/debug/*.apk dist/tapper-iptv-${{ github.run_number }}.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tapper-iptv-apk
+          path: dist/*.apk
+          retention-days: 30
+
+      # Artifacts need a logged-in session to download; a release asset on a
+      # public repo is fetchable by plain URL, which is what sideloading needs.
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Tapper IPTV build ${{ github.run_number }}
+          body: |
+            Debug-signed APK for sideloading to Fire TV or an Android tablet.
+            Built from ${{ github.sha }}.
+          files: dist/*.apk
