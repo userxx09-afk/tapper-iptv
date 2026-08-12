@@ -13,8 +13,8 @@ android {
         // files rather than the variable Archivo TTF: FontVariation needs 26.
         minSdk = 25
         targetSdk = 34
-        versionCode = 9
-        versionName = "0.7"
+        versionCode = 11
+        versionName = "0.7.2"
     }
     buildTypes {
         release {

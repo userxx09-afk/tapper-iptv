@@ -21,11 +21,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -138,7 +133,12 @@ fun BrowseScreen(
 
     var selected by remember(rails) { mutableStateOf(rails.firstOrNull() ?: Rail.Group(null)) }
     val firstFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { firstFocus.requestFocus() } }
+    // Re-requested whenever the rail expands: the collapsed strip that had
+    // focus is removed from the tree at that moment, and without this the
+    // D-pad would have nothing focused and appear dead.
+    LaunchedEffect(depth) {
+        if (depth == Depth.RAILS) runCatching { firstFocus.requestFocus() }
+    }
 
     val baseChannels: List<Channel> = when (val s = selected) {
         is Rail.Favorites -> favoriteChannels
@@ -301,7 +301,6 @@ fun BrowseScreen(
                             focusedChannel = ch
                             if (depth == Depth.RAILS) depth = Depth.CHANNELS
                         },
-                        onShowGuide = { focusedChannel = ch; depth = Depth.GUIDE },
                         programme = nowPlaying[EpgDatabase.normalizeId(ch.epgChannelId)],
                         onClick = activate,
                         onLongPress = {
@@ -333,6 +332,7 @@ fun BrowseScreen(
                 channel = focusedChannel,
                 schedule = schedule,
                 expanded = depth == Depth.GUIDE,
+                onFocused = { depth = Depth.GUIDE },
                 modifier = Modifier
                     .then(if (depth == Depth.GUIDE) Modifier.weight(1f) else Modifier.width(guideWidth))
                     .fillMaxHeight(),
@@ -428,7 +428,6 @@ private fun ChannelRow(
     favorite: Boolean,
     programme: EpgDatabase.Programme?,
     onFocused: () -> Unit,
-    onShowGuide: () -> Unit,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
 ) {
@@ -448,12 +447,6 @@ private fun ChannelRow(
                 onClick = onClick,
                 onLongClick = onLongPress,
             )
-            // Right expands the guide for this channel without leaving the list.
-            .onKeyEvent { e ->
-                if (e.type == KeyEventType.KeyUp && e.key == Key.DirectionRight) {
-                    onShowGuide(); true
-                } else false
-            }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

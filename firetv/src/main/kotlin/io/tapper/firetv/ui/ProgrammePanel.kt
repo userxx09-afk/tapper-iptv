@@ -1,6 +1,10 @@
 package io.tapper.firetv.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -8,6 +12,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,10 +40,29 @@ fun ProgrammePanel(
     channel: Channel?,
     schedule: List<EpgDatabase.Programme>,
     expanded: Boolean,
+    onFocused: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val fmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    Column(modifier) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    // Focus arriving here is what widens the column, mirroring how focus
+    // entering the channel list collapses the rail. Nothing expands on a key
+    // press, so moving between columns never overshoots a level.
+    LaunchedEffect(focused) { if (focused) onFocused() }
+
+    Column(
+        modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (focused) Focus.copy(alpha = 0.10f) else Color.Transparent)
+            .border(
+                if (focused) 2.dp else 0.dp,
+                if (focused) Focus.copy(alpha = 0.7f) else Color.Transparent,
+                RoundedCornerShape(10.dp),
+            )
+            .clickable(interactionSource = interaction, indication = null, onClick = onFocused)
+            .padding(10.dp)
+    ) {
         if (channel == null) {
             Text("Select a channel", style = MaterialTheme.typography.bodyMedium, color = Dim)
             return@Column

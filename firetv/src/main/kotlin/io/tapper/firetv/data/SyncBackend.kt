@@ -105,6 +105,8 @@ class WebDavBackend(
 
     private val root = baseUrl.trim().trimEnd('/')
 
+    private companion object { const val INDEX = "tapper-index.json" }
+
     private fun open(url: String, method: String): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
@@ -119,27 +121,36 @@ class WebDavBackend(
             }
         }
 
+    /**
+     * Device discovery via a shared index rather than PROPFIND.
+     *
+     * HttpURLConnection rejects any method outside its built-in list, and
+     * PROPFIND is not on it - setRequestMethod throws ProtocolException before
+     * a request is ever made. Rather than reflect into platform internals, each
+     * device registers its own file name in a small index.
+     *
+     * The index is the one file several devices may write, so a simultaneous
+     * update can drop a registration. That is harmless and self-healing: the
+     * affected device re-adds itself on its next sync, and its shard file was
+     * never at risk because nothing else writes it.
+     */
     override fun list(prefix: String): List<String> {
-        val conn = open(root, "PROPFIND").apply {
-            setRequestProperty("Depth", "1")
-            doOutput = true
-            outputStream.use { it.write("<?xml version=\"1.0\"?><propfind xmlns=\"DAV:\"><prop/></propfind>".toByteArray()) }
-        }
-        return try {
-            if (conn.responseCode !in 200..299) return emptyList()
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            // Namespace prefixes vary by server (d:, D:, none), so match loosely.
-            Regex("<[a-zA-Z]*:?href>([^<]+)</[a-zA-Z]*:?href>")
-                .findAll(body)
-                .map { it.groupValues[1].trimEnd('/').substringAfterLast('/') }
-                .map { Uri.decode(it) }
-                .filter { it.startsWith(prefix) }
-                .distinct().toList()
-        } catch (t: Throwable) {
-            emptyList()
-        } finally {
-            conn.disconnect()
-        }
+        val body = read(INDEX) ?: return emptyList()
+        return runCatching {
+            val arr = org.json.JSONArray(body)
+            (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { n -> n.startsWith(prefix) } }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun register(name: String) {
+        val known = runCatching {
+            val arr = org.json.JSONArray(read(INDEX) ?: "[]")
+            (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(String::isNotBlank) }
+        }.getOrDefault(emptyList())
+        if (name in known) return
+        val arr = org.json.JSONArray()
+        (known + name).distinct().forEach { arr.put(it) }
+        runCatching { put(INDEX, arr.toString()) }
     }
 
     override fun read(name: String): String? {
@@ -155,6 +166,13 @@ class WebDavBackend(
     }
 
     override fun write(name: String, content: String) {
+        put(name, content)
+        // Registered after a successful write, so a failed upload never leaves
+        // a name in the index pointing at nothing.
+        if (name != INDEX) register(name)
+    }
+
+    private fun put(name: String, content: String) {
         val conn = open("$root/$name", "PUT").apply {
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
