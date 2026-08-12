@@ -16,6 +16,19 @@ import android.database.sqlite.SQLiteOpenHelper
  */
 class EpgDatabase(context: Context) : SQLiteOpenHelper(context, "tapper_epg.db", null, 1) {
 
+    companion object {
+        /**
+         * Guide ids are matched loosely on purpose.
+         *
+         * A panel reports epg_channel_id as "CNN.us" while its own XMLTV file
+         * writes "cnn.us"; trailing spaces are common too. An exact match then
+         * silently finds nothing, which looks exactly like "the guide didn't
+         * download" even though it did. Both sides are normalised here.
+         */
+        fun normalizeId(raw: String?): String =
+            raw?.trim()?.lowercase().orEmpty()
+    }
+
     data class Programme(
         val channelId: String,
         val startUtc: Long,
@@ -72,7 +85,7 @@ class EpgDatabase(context: Context) : SQLiteOpenHelper(context, "tapper_epg.db",
             for (r in rows) {
                 stmt.clearBindings()
                 stmt.bindString(1, sourceId)
-                stmt.bindString(2, r.channelId)
+                stmt.bindString(2, normalizeId(r.channelId))
                 stmt.bindLong(3, r.startUtc)
                 stmt.bindLong(4, r.endUtc)
                 stmt.bindString(5, r.title)
@@ -93,6 +106,15 @@ class EpgDatabase(context: Context) : SQLiteOpenHelper(context, "tapper_epg.db",
         readableDatabase.rawQuery(
             "SELECT fetched_utc FROM epg_meta WHERE source_id = ?", arrayOf(sourceId)
         ).use { if (it.moveToFirst()) it.getLong(0) else 0L }
+
+    /** Distinct guide channel ids, so settings can report match coverage. */
+    fun guideChannelIds(sourceId: String): Set<String> {
+        val out = HashSet<String>()
+        readableDatabase.rawQuery(
+            "SELECT DISTINCT ch FROM epg WHERE source_id = ?", arrayOf(sourceId)
+        ).use { c -> while (c.moveToNext()) out.add(c.getString(0)) }
+        return out
+    }
 
     fun countFor(sourceId: String): Int =
         readableDatabase.rawQuery(
@@ -125,7 +147,7 @@ class EpgDatabase(context: Context) : SQLiteOpenHelper(context, "tapper_epg.db",
         readableDatabase.rawQuery(
             "SELECT ch, start_utc, end_utc, title, descr FROM epg " +
                 "WHERE source_id = ? AND ch = ? AND end_utc > ? ORDER BY start_utc LIMIT ?",
-            arrayOf(sourceId, channelId, now.toString(), limit.toString())
+            arrayOf(sourceId, normalizeId(channelId), now.toString(), limit.toString())
         ).use { c ->
             while (c.moveToNext()) {
                 out.add(Programme(c.getString(0), c.getLong(1), c.getLong(2), c.getString(3), c.getString(4)))

@@ -62,6 +62,7 @@ class TapperPlayer(
     private var startedAtMs = 0L
     private var renderedFrames = false
     private var probeJob: Job? = null
+    private var pendingResumeMs: Long? = null
     private var probe: AccountProbe? = null
     private var other: OtherDevice? = null
 
@@ -70,9 +71,15 @@ class TapperPlayer(
         player?.let { playerView.player = it }
     }
 
-    fun play(channel: Channel) {
+    /** Position and duration for on-demand items; 0 for live streams. */
+    fun positionMs(): Long = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
+    fun durationMs(): Long =
+        player?.duration?.takeIf { it > 0 && it != androidx.media3.common.C.TIME_UNSET } ?: 0L
+
+    fun play(channel: Channel, resumeMs: Long? = null) {
         current = channel
         attempt = 0
+        pendingResumeMs = resumeMs
 
         val first = channel.streams.first()
         // Fail fast and honestly rather than loading something ExoPlayer will
@@ -120,6 +127,9 @@ class TapperPlayer(
 
         exo.setMediaItem(MediaItem.fromUri(stream.url))
         exo.prepare()
+        // Seek after prepare: seeking before the timeline is known is ignored
+        // on progressive sources, which silently restarts the episode.
+        pendingResumeMs?.takeIf { it > 5_000 }?.let { exo.seekTo(it) }
         exo.playWhenReady = true
     }
 

@@ -47,12 +47,22 @@ fun SettingsScreen(
     onSetEpgUrl: (TvSource, String?) -> Unit,
     onRefreshGuide: () -> Unit,
     onClearCache: () -> Unit,
+    syncSummary: String,
+    syncBusy: Boolean,
+    onPickFolder: () -> Unit,
+    onSaveWebDav: (String, String, String) -> Unit,
+    onSyncNow: () -> Unit,
+    onDisableSync: () -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler { onExit() }
     var editing by remember { mutableStateOf<String?>(null) }
     var epgDraft by remember { mutableStateOf("") }
     var confirmRemove by remember { mutableStateOf<TvSource?>(null) }
+    var davOpen by remember { mutableStateOf(false) }
+    var davUrl by remember { mutableStateOf("") }
+    var davUser by remember { mutableStateOf("") }
+    var davPass by remember { mutableStateOf("") }
 
     Column(
         Modifier.fillMaxSize().background(Backdrop)
@@ -153,6 +163,40 @@ fun SettingsScreen(
         Chip("Refresh guide now", false, onRefreshGuide)
 
         Spacer(Modifier.height(28.dp))
+        Text("SHARED WATCH HISTORY", style = MaterialTheme.typography.bodyMedium, color = Dim)
+        Spacer(Modifier.height(8.dp))
+        Text(syncSummary, style = MaterialTheme.typography.bodyLarge, color = Ink)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Each device writes only its own file, so two devices can never " +
+                "overwrite each other. Progress merges when they sync.",
+            style = MaterialTheme.typography.bodyMedium, color = Dim,
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Drive, OneDrive and Dropbox all appear in the system folder
+            // picker when their app is installed - no separate sign-in here.
+            Chip("Choose folder", false, onPickFolder)
+            Chip("WebDAV / NAS", davOpen) { davOpen = !davOpen }
+            Chip(if (syncBusy) "Syncing..." else "Sync now", false) { if (!syncBusy) onSyncNow() }
+            Chip("Turn off", false, onDisableSync)
+        }
+
+        if (davOpen) {
+            Spacer(Modifier.height(12.dp))
+            SettingField("Folder URL", davUrl, "https://nas.local/remote.php/dav/files/me/tapper") { davUrl = it }
+            SettingField("Username (optional)", davUser, "") { davUser = it }
+            SettingField("Password (optional)", davPass, "", password = true) { davPass = it }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Chip("Save", false) {
+                    onSaveWebDav(davUrl.trim(), davUser.trim(), davPass); davOpen = false
+                }
+                Chip("Cancel", false) { davOpen = false }
+            }
+        }
+
+        Spacer(Modifier.height(28.dp))
         Text("STORAGE", style = MaterialTheme.typography.bodyMedium, color = Dim)
         Spacer(Modifier.height(8.dp))
         Text(
@@ -174,6 +218,39 @@ fun SettingsScreen(
                 MenuAction("Keep it") { confirmRemove = null },
             ),
             onDismiss = { confirmRemove = null },
+        )
+    }
+}
+
+@Composable
+private fun SettingField(
+    label: String,
+    value: String,
+    hint: String,
+    password: Boolean = false,
+    onChange: (String) -> Unit,
+) {
+    Spacer(Modifier.height(10.dp))
+    Text(label, style = MaterialTheme.typography.bodyMedium, color = Dim)
+    Spacer(Modifier.height(4.dp))
+    Box(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+            .background(Color.White.copy(alpha = 0.06f))
+            .border(1.dp, Focus.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        if (value.isEmpty() && hint.isNotEmpty()) {
+            Text(hint, style = MaterialTheme.typography.bodyMedium, color = Dim.copy(alpha = 0.6f),
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        BasicTextField(
+            value = value, onValueChange = onChange, singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink),
+            cursorBrush = SolidColor(Focus),
+            visualTransformation = if (password)
+                androidx.compose.ui.text.input.PasswordVisualTransformation()
+            else androidx.compose.ui.text.input.VisualTransformation.None,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }

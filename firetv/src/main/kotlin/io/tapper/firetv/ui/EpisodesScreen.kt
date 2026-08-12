@@ -41,6 +41,8 @@ fun EpisodesScreen(
     episodes: List<Channel>,
     loading: Boolean,
     error: String?,
+    watchedIds: Set<String>,
+    nextUpId: String?,
     onPlay: (List<Channel>, Int) -> Unit,
     onExit: () -> Unit,
 ) {
@@ -100,14 +102,23 @@ fun EpisodesScreen(
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             itemsIndexed(shown, key = { _, e -> e.id }) { i, ep ->
-                EpisodeRow(ep) { onPlay(shown, i) }
+                EpisodeRow(
+                    episode = ep,
+                    watched = ep.id in watchedIds,
+                    nextUp = ep.id == nextUpId,
+                ) { onPlay(shown, i) }
             }
         }
     }
 }
 
 @Composable
-private fun EpisodeRow(episode: Channel, onClick: () -> Unit) {
+private fun EpisodeRow(
+    episode: Channel,
+    watched: Boolean,
+    nextUp: Boolean,
+    onClick: () -> Unit,
+) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
     Row(
@@ -125,7 +136,18 @@ private fun EpisodeRow(episode: Channel, onClick: () -> Unit) {
                 modifier = Modifier.size(56.dp).clip(RoundedCornerShape(6.dp)))
             Spacer(Modifier.width(16.dp))
         }
-        Text(episode.name, style = MaterialTheme.typography.bodyLarge, color = Ink,
-            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Text(
+            episode.name,
+            style = MaterialTheme.typography.bodyLarge,
+            // Watched episodes dim rather than disappear: hiding them makes a
+            // rewatch impossible and the list confusing.
+            color = if (watched) Dim else Ink,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        if (nextUp) {
+            Text("NEXT UP", style = MaterialTheme.typography.bodyMedium, color = Focus)
+            Spacer(Modifier.width(12.dp))
+        }
+        if (watched) Text("watched", style = MaterialTheme.typography.bodyMedium, color = Dim)
     }
 }

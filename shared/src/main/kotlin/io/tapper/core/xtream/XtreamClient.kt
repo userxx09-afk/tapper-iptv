@@ -34,11 +34,16 @@ class XtreamClient(
     private val base = host.trim().trimEnd('/')
         .let { if (it.startsWith("http://") || it.startsWith("https://")) it else "http://$it" }
         .let { raw ->
-            runCatching {
-                val u = URL(raw)
-                val portPart = if (u.port > 0) ":" + u.port else ""
-                u.protocol + "://" + u.host + portPart
-            }.getOrDefault(raw)
+            // Strip only the known API entry points a provider might have
+            // appended. A blanket strip to scheme+host+port would break panels
+            // genuinely hosted under a path prefix, which do exist.
+            // Query string first: "/get.php?username=..." only ends with the
+            // known suffix once the query has been removed.
+            var r = raw.substringBefore('?').trimEnd('/')
+            for (suffix in listOf("/player_api.php", "/panel_api.php", "/get.php", "/xmltv.php", "/c", "/index.php")) {
+                if (r.endsWith(suffix, ignoreCase = true)) { r = r.dropLast(suffix.length); break }
+            }
+            r.trimEnd('/')
         }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")

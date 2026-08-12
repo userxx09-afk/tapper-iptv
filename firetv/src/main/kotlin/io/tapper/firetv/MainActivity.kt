@@ -1,8 +1,11 @@
 package io.tapper.firetv
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.lifecycle.lifecycleScope
 import io.tapper.core.model.Channel
@@ -61,6 +64,46 @@ class MainActivity : ComponentActivity() {
             var episodes by remember { mutableStateOf<List<Channel>>(emptyList()) }
             var episodesLoading by remember { mutableStateOf(false) }
             var episodesError by remember { mutableStateOf<String?>(null) }
+            // Remembered so episode progress is filed against its series.
+            var seriesContext by remember { mutableStateOf<Channel?>(null) }
+            var syncBusy by remember { mutableStateOf(false) }
+            var syncSummary by remember { mutableStateOf(app.sync.describe()) }
+
+            fun runSync() {
+                syncBusy = true
+                lifecycleScope.launch {
+                    val r = app.sync.sync()
+                    syncBusy = false
+                    syncSummary = r.fold(
+                        onSuccess = {
+                            app.sync.describe() + "  ·  merged " + it.changed +
+                                " from " + it.pulledFrom + " other device(s)"
+                        },
+                        onFailure = { "Sync failed: " + (it.message ?: "unknown error") },
+                    )
+                }
+            }
+
+            // The system folder picker: whatever provider the user has installed
+            // (Drive, OneDrive, Dropbox, a NAS client) appears as a choice.
+            val folderPicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocumentTree()
+            ) { uri ->
+                if (uri != null) {
+                    // Without persisting, the grant dies with the process and
+                    // sync silently stops working after a reboot.
+                    runCatching {
+                        contentResolver.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                        )
+                    }
+                    app.sync.saveFolder(uri)
+                    syncSummary = app.sync.describe()
+                    runSync()
+                }
+            }
 
             fun reloadNowPlaying() {
                 lifecycleScope.launch {
@@ -108,11 +151,20 @@ class MainActivity : ComponentActivity() {
 
             LaunchedEffect(active.id) { loadActive() }
 
+            // Pull on launch so a device that was off overnight catches up
+            // before the user starts browsing.
+            LaunchedEffect(Unit) {
+                if (app.sync.config().kind != io.tapper.firetv.data.WatchSync.Config.Kind.NONE) {
+                    runSync()
+                }
+            }
+
             // The catalogue survives navigation: it lives on the Browse entry
             // at the bottom of the stack, so Settings and Search do not lose it.
             val catalogue = stack.filterIsInstance<Screen.Browse>().lastOrNull()?.catalogue
 
             fun openSeries(series: Channel) {
+                seriesContext = series
                 push(Screen.Series(series))
                 episodes = emptyList(); episodesError = null; episodesLoading = true
                 lifecycleScope.launch {
@@ -141,8 +193,27 @@ class MainActivity : ComponentActivity() {
                     p != null -> PlayerScreen(
                         channels = p.channels,
                         startIndex = p.index,
-                        nowPlaying = { ch -> ch.epgChannelId?.let { nowPlaying[it] } },
-                        onExit = { playing = null },
+                        nowPlaying = { ch -> nowPlaying[EpgDatabase.normalizeId(ch.epgChannelId)] },
+                        resumeAt = { ch -> app.sync.resumeAt(ch.id) },
+                        onProgress = { ch, pos, dur, finished ->
+                            app.sync.record(
+                                itemId = ch.id,
+                                sourceId = ch.sourceId,
+                                seriesId = seriesContext?.seriesId,
+                                season = seriesContext?.let { ch.number ?: 0 } ?: 0,
+                                number = ch.number ?: 0,
+                                title = ch.name,
+                                positionMs = pos,
+                                durationMs = dur,
+                                finished = finished,
+                            )
+                        },
+                        onExit = {
+                            playing = null
+                            // Publish as soon as viewing stops, so the other
+                            // device sees it without waiting for a launch.
+                            lifecycleScope.launch { app.sync.sync() }
+                        },
                     )
 
                     current is Screen.Series -> EpisodesScreen(
@@ -150,6 +221,22 @@ class MainActivity : ComponentActivity() {
                         episodes = episodes,
                         loading = episodesLoading,
                         error = episodesError,
+                        watchedIds = remember(episodes, syncSummary) {
+                            app.watch.all().filter { it.watched }.map { it.itemId }.toSet()
+                        },
+                        nextUpId = remember(episodes, syncSummary) {
+                            current.series.seriesId?.let { sid ->
+                                app.sync.nextEpisode(
+                                    sid,
+                                    episodes.map {
+                                        io.tapper.firetv.data.WatchSync.EpisodeRef(
+                                            it.id, it.group?.filter { c -> c.isDigit() }?.toIntOrNull() ?: 0,
+                                            it.number ?: 0,
+                                        )
+                                    },
+                                )?.itemId
+                            }
+                        },
                         onPlay = { list, i -> playing = Playing(list, i) },
                         onExit = { pop() },
                     )
@@ -221,8 +308,27 @@ class MainActivity : ComponentActivity() {
                     current is Screen.Settings -> SettingsScreen(
                         sources = sources,
                         activeId = active.id,
-                        guideSummary = epgStatus
-                            ?: if (app.epg.hasData(active.id)) "Guide loaded." else "No guide data yet.",
+                        guideSummary = buildString {
+                            append(epgStatus ?: if (app.epg.hasData(active.id)) "Guide loaded." else "No guide data yet.")
+                            // Coverage is the number that actually explains a
+                            // blank guide: rows can be stored yet match nothing
+                            // if the panel's ids differ from its XMLTV ids.
+                            val cat = catalogue
+                            if (cat != null && app.epg.hasData(active.id)) {
+                                val guideIds = runCatching { app.epgDb.guideChannelIds(active.id) }
+                                    .getOrDefault(emptySet())
+                                val live = cat.channels.filter { it.kind == ContentKind.LIVE }
+                                val matched = live.count {
+                                    EpgDatabase.normalizeId(it.epgChannelId).isNotEmpty() &&
+                                        EpgDatabase.normalizeId(it.epgChannelId) in guideIds
+                                }
+                                append("\n" + matched + " of " + live.size + " channels matched to the guide")
+                                if (matched == 0 && guideIds.isNotEmpty()) {
+                                    append("\nGuide has " + guideIds.size +
+                                        " channel ids but none match this playlist. The guide is for a different source.")
+                                }
+                            }
+                        },
                         onSwitchSource = {
                             app.sourceStore.activeId = it.id
                             active = it
@@ -245,6 +351,16 @@ class MainActivity : ComponentActivity() {
                         },
                         onRefreshGuide = { refreshEpg(catalogue) },
                         onClearCache = { app.repository.clearCache() },
+                        syncSummary = syncSummary,
+                        syncBusy = syncBusy,
+                        onPickFolder = { runCatching { folderPicker.launch(null) } },
+                        onSaveWebDav = { url, user, pass ->
+                            app.sync.saveWebDav(url, user.ifBlank { null }, pass.ifBlank { null })
+                            syncSummary = app.sync.describe()
+                            runSync()
+                        },
+                        onSyncNow = { runSync() },
+                        onDisableSync = { app.sync.disable(); syncSummary = app.sync.describe() },
                         onExit = { pop() },
                     )
 
@@ -263,6 +379,13 @@ class MainActivity : ComponentActivity() {
                         onSettings = { push(Screen.Settings) },
                         onRefreshEpg = { refreshEpg(current.catalogue) },
                         onOpenSeries = { openSeries(it) },
+                        scheduleFor = { ch ->
+                            app.epgDb.upcoming(
+                                active.id,
+                                EpgDatabase.normalizeId(ch.epgChannelId),
+                                System.currentTimeMillis(),
+                            )
+                        },
                     )
                 }
             }

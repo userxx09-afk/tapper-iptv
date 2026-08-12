@@ -1,5 +1,7 @@
 package io.tapper.firetv.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,6 +21,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -26,6 +33,7 @@ import coil.compose.AsyncImage
 import io.tapper.core.model.Channel
 import io.tapper.core.model.ContentKind
 import io.tapper.firetv.data.EpgDatabase
+import io.tapper.firetv.data.EpgDatabase.Programme
 import io.tapper.firetv.data.FavoritesStore
 import io.tapper.firetv.data.PlaylistRepository
 import io.tapper.firetv.data.PlaylistRepository.Axis
@@ -40,6 +48,8 @@ internal fun kindLabel(kind: ContentKind): String = when (kind) {
     ContentKind.MOVIE -> "Movies"
     ContentKind.SERIES -> "Shows"
 }
+
+private enum class Depth { RAILS, CHANNELS, GUIDE }
 
 private sealed interface Rail {
     data object Favorites : Rail
@@ -62,7 +72,41 @@ fun BrowseScreen(
     onSettings: () -> Unit,
     onRefreshEpg: () -> Unit,
     onOpenSeries: (Channel) -> Unit,
+    scheduleFor: (Channel) -> List<Programme>,
 ) {
+    /**
+     * Miller columns. Depth follows focus rather than clicks, so drilling in
+     * costs nothing: moving right into the channel list collapses the rail,
+     * and moving right again to the guide collapses the channel list. Every
+     * collapsed column stays on screen and clickable, so the way back is
+     * always visible.
+     */
+    var depth by remember(catalogue.sourceId) { mutableStateOf(Depth.RAILS) }
+    var focusedChannel by remember { mutableStateOf<Channel?>(null) }
+    var schedule by remember { mutableStateOf<List<Programme>>(emptyList()) }
+
+    // Guide lookup is a database read; doing it per focus change on the main
+    // thread would stutter the list, so it is keyed and debounced by focus.
+    LaunchedEffect(focusedChannel?.id) {
+        val ch = focusedChannel
+        schedule = if (ch == null) emptyList() else runCatching { scheduleFor(ch) }.getOrDefault(emptyList())
+    }
+
+    BackHandler(enabled = depth != Depth.RAILS) {
+        depth = if (depth == Depth.GUIDE) Depth.CHANNELS else Depth.RAILS
+    }
+
+    val railWidth by animateDpAsState(
+        when (depth) { Depth.RAILS -> 330.dp; else -> 92.dp }, label = "rail"
+    )
+    val guideWidth by animateDpAsState(
+        when (depth) { Depth.RAILS -> 0.dp; Depth.CHANNELS -> 300.dp; Depth.GUIDE -> 460.dp },
+        label = "guide"
+    )
+    val channelWidth by animateDpAsState(
+        when (depth) { Depth.GUIDE -> 260.dp; else -> 0.dp }, label = "channels"
+    )
+
     var revision by remember { mutableIntStateOf(0) }
     var menu by remember { mutableStateOf<(@Composable () -> Unit)?>(null) }
     val kinds = catalogue.availableKinds
@@ -118,7 +162,20 @@ fun BrowseScreen(
         Modifier.fillMaxSize().background(Backdrop)
             .padding(horizontal = 48.dp, vertical = 27.dp)
     ) {
-        Column(Modifier.width(360.dp).fillMaxHeight()) {
+        if (depth != Depth.RAILS) {
+            // Collapsed rail: shows where you are and returns you there.
+            CollapsedColumn(
+                width = railWidth,
+                caption = "SOURCE",
+                label = when (val sel = selected) {
+                    is Rail.Favorites -> "Favorites"
+                    is Rail.Group -> groups.firstOrNull { it.key == sel.key }?.label ?: "All"
+                },
+                onClick = { depth = Depth.RAILS },
+            )
+            Spacer(Modifier.width(20.dp))
+        } else {
+        Column(Modifier.width(railWidth).fillMaxHeight()) {
 
             SourceHeader(activeSource, epgStatus) {
                 menu = {
@@ -191,9 +248,20 @@ fun BrowseScreen(
                 }
             }
         }
+        }
 
-        Spacer(Modifier.width(32.dp))
+        Spacer(Modifier.width(if (depth == Depth.RAILS) 32.dp else 0.dp))
 
+        if (depth == Depth.GUIDE) {
+            // Collapsed channel list: the focused channel, click to widen again.
+            CollapsedColumn(
+                width = channelWidth,
+                caption = "CHANNEL",
+                label = focusedChannel?.name ?: heading,
+                onClick = { depth = Depth.CHANNELS },
+            )
+            Spacer(Modifier.width(20.dp))
+        } else {
         Column(Modifier.weight(1f).fillMaxHeight()) {
             Text(heading, style = MaterialTheme.typography.headlineLarge, color = Ink,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -229,13 +297,18 @@ fun BrowseScreen(
                     ChannelRow(
                         channel = ch,
                         favorite = isFav,
-                        programme = ch.epgChannelId?.let { nowPlaying[it] },
+                        onFocused = {
+                            focusedChannel = ch
+                            if (depth == Depth.RAILS) depth = Depth.CHANNELS
+                        },
+                        onShowGuide = { focusedChannel = ch; depth = Depth.GUIDE },
+                        programme = nowPlaying[EpgDatabase.normalizeId(ch.epgChannelId)],
                         onClick = activate,
                         onLongPress = {
                             menu = {
                                 ItemMenu(
                                     title = ch.name,
-                                    subtitle = ch.epgChannelId?.let { nowPlaying[it]?.title } ?: ch.group,
+                                    subtitle = nowPlaying[EpgDatabase.normalizeId(ch.epgChannelId)]?.title ?: ch.group,
                                     actions = listOf(
                                         MenuAction(
                                             if (ch.kind == ContentKind.SERIES) "Open" else "Play"
@@ -251,6 +324,19 @@ fun BrowseScreen(
                     )
                 }
             }
+        }
+        }
+
+        if (guideWidth > 0.dp) {
+            Spacer(Modifier.width(20.dp))
+            ProgrammePanel(
+                channel = focusedChannel,
+                schedule = schedule,
+                expanded = depth == Depth.GUIDE,
+                modifier = Modifier
+                    .then(if (depth == Depth.GUIDE) Modifier.weight(1f) else Modifier.width(guideWidth))
+                    .fillMaxHeight(),
+            )
         }
     }
 
@@ -341,11 +427,14 @@ private fun ChannelRow(
     channel: Channel,
     favorite: Boolean,
     programme: EpgDatabase.Programme?,
+    onFocused: () -> Unit,
+    onShowGuide: () -> Unit,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
+    LaunchedEffect(focused) { if (focused) onFocused() }
 
     Row(
         Modifier.fillMaxWidth()
@@ -359,6 +448,12 @@ private fun ChannelRow(
                 onClick = onClick,
                 onLongClick = onLongPress,
             )
+            // Right expands the guide for this channel without leaving the list.
+            .onKeyEvent { e ->
+                if (e.type == KeyEventType.KeyUp && e.key == Key.DirectionRight) {
+                    onShowGuide(); true
+                } else false
+            }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -389,5 +484,44 @@ private fun ChannelRow(
             Text("${channel.streams.size} feeds",
                 style = MaterialTheme.typography.bodyMedium, color = Dim)
         }
+    }
+}
+
+/**
+ * A column that has been collapsed to a narrow strip. Stays fully focusable and
+ * clickable so the level above is always one press away - the point of the
+ * layout is to reclaim width without hiding the way back.
+ */
+@Composable
+private fun CollapsedColumn(
+    width: androidx.compose.ui.unit.Dp,
+    caption: String,
+    label: String,
+    onClick: () -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    Column(
+        Modifier
+            .width(width)
+            .fillMaxHeight()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (focused) Focus.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
+            .border(if (focused) 2.dp else 0.dp, if (focused) Focus else Color.Transparent,
+                RoundedCornerShape(8.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 14.dp),
+    ) {
+        Text("<", style = MaterialTheme.typography.titleMedium, color = if (focused) Ink else Dim)
+        Spacer(Modifier.height(10.dp))
+        Text(caption, style = MaterialTheme.typography.bodyMedium, color = Dim, maxLines = 1)
+        Spacer(Modifier.height(4.dp))
+        // Wraps rather than ellipsising: in a 92dp strip the first two lines
+        // carry more meaning than a single truncated one.
+        Text(
+            label, style = MaterialTheme.typography.bodyMedium,
+            color = if (focused) Ink else Dim, maxLines = 4,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }

@@ -23,6 +23,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import io.tapper.core.model.Channel
+import io.tapper.core.model.ContentKind
 import io.tapper.core.playback.Diagnosis
 import io.tapper.firetv.data.EpgDatabase
 import io.tapper.firetv.player.TapperPlayer
@@ -47,6 +48,8 @@ fun PlayerScreen(
     channels: List<Channel>,
     startIndex: Int,
     nowPlaying: (Channel) -> EpgDatabase.Programme?,
+    resumeAt: (Channel) -> Long?,
+    onProgress: (Channel, Long, Long, Boolean) -> Unit,
     onExit: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -71,11 +74,34 @@ fun PlayerScreen(
     // Re-tunes whenever the index changes; also covers the initial channel.
     LaunchedEffect(channel.id) {
         overlayVisible = true
-        player.play(channel)
+        player.play(channel, resumeAt(channel))
     }
 
     LaunchedEffect(channel.id, status) {
         if (status == null) { delay(4000); overlayVisible = false }
+    }
+
+    // Progress is sampled on a timer and again on exit. Live channels have no
+    // meaningful position, so only on-demand items are recorded.
+    LaunchedEffect(channel.id) {
+        if (channel.kind == ContentKind.LIVE) return@LaunchedEffect
+        while (true) {
+            delay(10_000)
+            val pos = player.positionMs()
+            val dur = player.durationMs()
+            if (dur > 0) onProgress(channel, pos, dur, false)
+        }
+    }
+
+    DisposableEffect(channel.id) {
+        onDispose {
+            if (channel.kind != ContentKind.LIVE) {
+                val pos = player.positionMs(); val dur = player.durationMs()
+                // "Only on exit" would lose everything when Fire OS kills the
+                // app for memory, which it does often; this is the backstop.
+                if (dur > 0) onProgress(channel, pos, dur, false)
+            }
+        }
     }
 
     DisposableEffect(Unit) { onDispose { player.release(); scope.cancel() } }
